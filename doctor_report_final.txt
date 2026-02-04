@@ -1,0 +1,34 @@
+﻿env: load .env.local
+env: export SUPABASE_URL SUPABASE_ANON_KEY
+Running 17 checks on your project...
+15/17 checks passed. 2 checks failed. Possible issues detected:
+Use the --verbose flag to see more details about passed checks.
+
+Γ£û Validate packages against React Native Directory package metadata
+The following issues were found when validating your dependencies against React Native Directory:
+  Untested on New Architecture: react-native-chart-kit
+  Unmaintained: react-native-chart-kit
+  No metadata available: @config-plugins/react-native-ble-plx
+Advice:
+Use libraries that are actively maintained and support the New Architecture. Find alternative libraries with https://reactnative.directory.
+Add packages to expo.doctor.reactNativeDirectoryCheck.exclude in package.json to selectively skip validations, if the warning is not relevant.
+Update React Native Directory to include metadata for unknown packages. Alternatively, set expo.doctor.reactNativeDirectoryCheck.listUnknownPackages in package.json to false to skip warnings about packages with no metadata, if the warning is not relevant.
+
+Γ£û Check that packages match versions required by installed Expo SDK
+The following packages should be updated for best compatibility with the installed expo version:
+  @expo/metro-runtime@5.0.5 - expected version: ~4.0.1
+  @react-native-async-storage/async-storage@2.1.2 - expected version: 1.23.1
+  react-native@0.76.6 - expected version: 0.76.9
+  react-native-gesture-handler@2.24.0 - expected version: ~2.20.2
+  react-native-maps@1.20.1 - expected version: 1.18.0
+  react-native-reanimated@3.17.5 - expected version: ~3.16.1
+  react-native-safe-area-context@5.4.0 - expected version: 4.12.0
+  react-native-screens@4.11.1 - expected version: ~4.4.0
+  react-native-svg@15.11.2 - expected version: 15.8.0
+  babel-preset-expo@13.0.0 - expected version: ~12.0.0
+Your project may not work correctly until you install the expected versions of the packages.
+Found outdated dependencies
+Advice:
+Use 'npx expo install --check' to review and upgrade your dependencies.
+To ignore specific packages, add them to "expo.install.exclude" in package.json. Learn more: https://expo.fyi/dependency-validation
+

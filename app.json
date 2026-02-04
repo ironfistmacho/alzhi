@@ -1,0 +1,73 @@
+{
+  "expo": {
+    "name": "Alzheimer Caregiver App",
+    "slug": "alzheimer-caregiver-app",
+    "version": "1.0.0",
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "supabaseUrl": "${SUPABASE_URL}",
+      "supabaseAnonKey": "${SUPABASE_ANON_KEY}",
+      "eas": {
+        "projectId": "fb1969f7-30de-435d-bbd3-59bc171370d9"
+      }
+    },
+    "android": {
+      "package": "com.alby34.alzheimercaregiver",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDBCjXdXTrzxKDTit5K4LFOPbNeaEp6-ag"
+        }
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.yourcompany.alzheimercaregiver",
+      "supportsTablet": true
+    },
+    "owner": "alby34",
+    "plugins": [
+      [
+        "@config-plugins/react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": [
+            "peripheral",
+            "central"
+          ],
+          "bluetoothAlwaysPermission": "Allow Alzheimer Caregiver App to use Bluetooth."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysPermission": "Allow Alzheimer Caregiver App to use your location at all times.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "foregroundService": {
+            "notificationTitle": "Patient Monitoring Active",
+            "notificationBody": "Tracking patient location for safety",
+            "foregroundServiceType": "location"
+          }
+        }
+      ]
+    ]
+  }
+}
