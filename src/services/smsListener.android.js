@@ -3,14 +3,13 @@
  * Bridges native Android SMS receiver to React Native
  */
 
-import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
+import { NativeModules, DeviceEventEmitter, Platform, ToastAndroid } from 'react-native';
 import smsParser from './smsParser';
 
 const SmsListener = Platform.OS === 'android' ? NativeModules.SmsListener : null;
 
 class SMSListenerService {
     constructor() {
-        this.eventEmitter = null;
         this.subscription = null;
         this.isListening = false;
     }
@@ -24,22 +23,14 @@ class SMSListenerService {
             return false;
         }
 
-        if (!SmsListener) {
-            console.error('Native SMS listener module not available');
-            return false;
-        }
-
         try {
-            // Create event emitter for native events
-            this.eventEmitter = new NativeEventEmitter(SmsListener);
-
-            // Subscribe to SMS received events
-            this.subscription = this.eventEmitter.addListener(
+            // Subscribe to SMS received events using DeviceEventEmitter
+            this.subscription = DeviceEventEmitter.addListener(
                 'onSMSReceived',
                 this.handleIncomingSMS.bind(this)
             );
 
-            console.log('SMS listener initialized');
+            console.log('SMS listener initialized (DeviceEventEmitter)');
             return true;
         } catch (error) {
             console.error('Error initializing SMS listener:', error);
@@ -93,13 +84,29 @@ class SMSListenerService {
         try {
             const { sender, message, timestamp, isFallAlert } = sms;
 
-            // Process fall alerts immediately
-            if (isFallAlert || (message && message.includes('FALL_ALERT'))) {
-                console.log('Processing fall alert SMS');
-                await smsParser.processIncomingSMS(message, sender);
+            // Visual feedback for debugging
+            if (Platform.OS === 'android') {
+                ToastAndroid.show(`JS: Received from ${sender}`, ToastAndroid.SHORT);
+            }
+
+            // Process tracking and alerts immediately
+            const isAlert = message && (message.includes('FALL_ALERT') || message.includes('LOCATION_UPDATE'));
+
+            if (isFallAlert || isAlert) {
+                console.log('Processing incoming monitor SMS');
+                if (Platform.OS === 'android') {
+                    ToastAndroid.show(`🚨 Parsing ${message.includes('FALL_ALERT') ? 'Fall Alert' : 'Location Update'}...`, ToastAndroid.SHORT);
+                }
+                const processed = await smsParser.processIncomingSMS(message, sender);
+
+                if (processed && Platform.OS === 'android') {
+                    ToastAndroid.show('✅ Processed Successfully', ToastAndroid.SHORT);
+                } else if (Platform.OS === 'android') {
+                    ToastAndroid.show('❌ Parsing Failed', ToastAndroid.SHORT);
+                }
             } else {
                 // Log other SMS (optional: implement filtering)
-                console.log('Non-alert SMS received from:', sender);
+                console.log('Non-monitor SMS received from:', sender);
             }
         } catch (error) {
             console.error('Error handling incoming SMS:', error);

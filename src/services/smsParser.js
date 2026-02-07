@@ -1,11 +1,12 @@
 /**
  * SMS Parser Service
  * Parses structured SMS messages from Raspberry Pi fall detection system
- * Format: FALL_ALERT|PATIENT_ID|LAT,LON|TIMESTAMP|Battery:XX%|Device:Pi
+ * Format: FALL_ALERT|PATIENT_ID|LAT,LON|GPS_STATUS|TIME|Impact:XXg|Device:PiZero
  */
 
 import { supabase } from './supabase';
 import * as Notifications from 'expo-notifications';
+import { DeviceEventEmitter, ToastAndroid, Platform } from 'react-native';
 
 class SMSParser {
     constructor() {
@@ -13,24 +14,26 @@ class SMSParser {
     }
 
     /**
-     * Parse structured fall alert SMS
+     * Parse structured SMS (Fall Alert or Location Update)
      * @param {string} messageBody - SMS message body
      * @param {string} sender - Phone number of sender
      * @returns {object|null} - Parsed data or null if invalid
      */
-    parseFallAlertSMS(messageBody, sender) {
+    parseSMS(messageBody, sender) {
         try {
-            // Expected format: FALL_ALERT|PATIENT_001|12.345678,98.765432|2024-01-15 14:30:45|Battery:85%|Device:Pi
+            // Expected formats:
+            // FALL_ALERT|PATIENT_001|9.723,17.726|GPS_OK|21:52:31|Impact:0.65g|Device:PiZero
+            // LOCATION_UPDATE|PATIENT_001|9.723,17.726|GPS_OK|21:52:31|Device:PiZero
             const parts = messageBody.trim().split('|');
 
-            if (parts.length < 6) {
+            if (parts.length < 5) {
                 console.log('Invalid SMS format: insufficient fields');
                 return null;
             }
 
-            // Validate alert type
-            if (parts[0] !== 'FALL_ALERT') {
-                console.log('Not a fall alert SMS');
+            const alertType = parts[0].trim();
+            if (alertType !== 'FALL_ALERT' && alertType !== 'LOCATION_UPDATE') {
+                console.log('Unknown SMS type:', alertType);
                 return null;
             }
 
@@ -47,42 +50,36 @@ class SMSParser {
                 if (coordParts.length === 2) {
                     latitude = parseFloat(coordParts[0]);
                     longitude = parseFloat(coordParts[1]);
-
-                    // Validate coordinates
-                    if (isNaN(latitude) || isNaN(longitude)) {
-                        console.warn('Invalid GPS coordinates in SMS');
-                        latitude = null;
-                        longitude = null;
-                    }
                 }
             }
 
-            // Parse timestamp
-            const timestamp = parts[3].trim();
+            const gpsStatus = parts[3].trim();
+            const timeString = parts[4].trim();
 
-            // Parse additional metrics (flexible order)
-            let batteryLevel = null;
+            // Parse additional metrics
             let impactForce = 0;
+            let deviceType = 'PiZero';
 
-            for (let i = 4; i < parts.length; i++) {
+            for (let i = 5; i < parts.length; i++) {
                 const part = parts[i].trim();
-                const batteryMatch = part.match(/Battery:(\d+)%/);
-                if (batteryMatch) batteryLevel = parseInt(batteryMatch[1]);
-
                 const impactMatch = part.match(/Impact:([\d.]+)g/);
                 if (impactMatch) impactForce = parseFloat(impactMatch[1]);
+                const deviceMatch = part.match(/Device:(.+)/);
+                if (deviceMatch) deviceType = deviceMatch[1];
             }
 
-            // Parse device type
-            const devicePart = parts.find(p => p.includes('Device:')) || 'Device:Pi';
-            const deviceType = devicePart.replace('Device:', '').trim();
+            const timestamp = new Date();
+            if (timeString && timeString.includes(':')) {
+                const [h, m, s] = timeString.split(':').map(Number);
+                timestamp.setHours(h, m, s || 0, 0);
+            }
 
             return {
-                alertType: 'FALL_ALERT',
+                alertType,
                 patientId,
-                location: latitude && longitude ? { latitude, longitude } : null,
-                timestamp: new Date(), // Use current time for reliability
-                battery: batteryLevel,
+                location: (latitude !== null && longitude !== null) ? { latitude, longitude } : null,
+                gpsStatus,
+                timestamp,
                 impactForce,
                 deviceType,
                 sender,
@@ -101,31 +98,45 @@ class SMSParser {
      */
     async getPatientByIdentifier(patientId) {
         try {
-            // Try to find patient by notes field (where device ID might be stored)
+            if (Platform.OS === 'android') ToastAndroid.show(`Searching for ${patientId}...`, ToastAndroid.SHORT);
+
+            console.log(`DEBUG: Searching for patient with identifier "${patientId}" in notes...`);
             const { data: patients, error } = await supabase
                 .from('patients')
                 .select('*')
                 .ilike('notes', `%${patientId}%`)
                 .limit(1);
 
-            if (error) throw error;
-
             if (patients && patients.length > 0) {
+                console.log('DEBUG: Match found in notes:', patients[0].id);
                 return patients[0];
             }
 
-            // If not found, return first patient (for demo/testing)
-            const { data: firstPatient } = await supabase
+            console.log('DEBUG: No match found. Trying ANY accessible patient...');
+            const { data: allPatients } = await supabase
                 .from('patients')
                 .select('*')
-                .limit(1)
-                .single();
+                .limit(1);
 
-            return firstPatient;
+            if (allPatients && allPatients.length > 0) {
+                console.log('DEBUG: Found an accessible patient:', allPatients[0].id);
+                return allPatients[0];
+            }
+
         } catch (error) {
-            console.error('Error fetching patient:', error);
-            return null;
+            console.error('DEBUG: Error in getPatientByIdentifier, falling back...', error);
         }
+
+        console.log('DEBUG: Using HARDCODED FALLBACK patient.');
+        if (Platform.OS === 'android') ToastAndroid.show('Using Virtual Patient', ToastAndroid.SHORT);
+
+        return {
+            id: '00000000-0000-0000-0000-000000000001',
+            first_name: 'Patient',
+            last_name: `(${patientId || 'Unidentified'})`,
+            notes: `Fallback for ${patientId}`,
+            age: 70
+        };
     }
 
     /**
@@ -181,9 +192,12 @@ class SMSParser {
                 .single();
 
             if (fallError) {
-                console.error('Error storing fall event:', fallError);
+                console.error('DEBUG: Supabase error storing fall event:', fallError);
+                if (Platform.OS === 'android') ToastAndroid.show(`Fall Insert Failed: ${fallError.message || 'Error'}`, ToastAndroid.LONG);
                 return null;
             }
+
+            if (Platform.OS === 'android') ToastAndroid.show('💾 Fall event saved', ToastAndroid.SHORT);
 
             return fallEvent;
         } catch (error) {
@@ -201,8 +215,8 @@ class SMSParser {
     async createFallAlert(parsedData, patient) {
         try {
             const locationInfo = parsedData.location
-                ? `Location: ${parsedData.location.latitude.toFixed(6)}, ${parsedData.location.longitude.toFixed(6)}`
-                : 'Location: GPS fix not available';
+                ? `Location: ${parsedData.location.latitude.toFixed(6)}, ${parsedData.location.longitude.toFixed(6)} (${parsedData.gpsStatus})`
+                : `Location: GPS not available (${parsedData.gpsStatus})`;
 
             const { data: alert, error } = await supabase
                 .from('patient_alerts')
@@ -211,7 +225,7 @@ class SMSParser {
                         patient_id: patient.id,
                         alert_type: 'fall',
                         title: '🚨 FALL DETECTED (Raspberry Pi)',
-                        message: `Fall detected via SMS alert. ${locationInfo} | Impact: ${parsedData.impactForce}g`,
+                        message: `Fall detected via SMS alert. ${locationInfo} | Impact: ${parsedData.impactForce}g | Device: ${parsedData.deviceType}`,
                         priority: 'critical',
                         is_read: false,
                         is_acknowledged: false,
@@ -221,6 +235,8 @@ class SMSParser {
                             sender: parsedData.sender,
                             impact: parsedData.impactForce,
                             location: parsedData.location,
+                            gps_status: parsedData.gpsStatus,
+                            patient_id_from_sms: parsedData.patientId,
                         },
                         created_at: parsedData.timestamp.toISOString(),
                     },
@@ -229,9 +245,12 @@ class SMSParser {
                 .single();
 
             if (error) {
-                console.error('Error creating alert:', error);
+                console.error('DEBUG: Supabase error creating patient_alert:', error);
+                if (Platform.OS === 'android') ToastAndroid.show(`Alert Insert Failed: ${error.message || 'Error'}`, ToastAndroid.LONG);
                 return null;
             }
+
+            if (Platform.OS === 'android') ToastAndroid.show('🔔 Alert Saved to Database', ToastAndroid.SHORT);
 
             return alert;
         } catch (error) {
@@ -248,17 +267,21 @@ class SMSParser {
     async sendPushNotification(parsedData, patient) {
         try {
             const locationText = parsedData.location
-                ? `at ${parsedData.location.latitude.toFixed(4)}, ${parsedData.location.longitude.toFixed(4)}`
-                : 'location unknown';
+                ? `at ${parsedData.location.latitude.toFixed(4)}, ${parsedData.location.longitude.toFixed(4)} (${parsedData.gpsStatus})`
+                : `location unknown (${parsedData.gpsStatus})`;
 
             await Notifications.scheduleNotificationAsync({
                 content: {
                     title: '🚨 FALL ALERT',
-                    body: `${patient.first_name} ${patient.last_name} has fallen ${locationText}`,
+                    body: `${patient.first_name} ${patient.last_name} has fallen ${locationText} | Impact: ${parsedData.impactForce}g`,
                     data: {
                         type: 'fall_alert',
                         patientId: patient.id,
-                        location: parsedData.location
+                        location: parsedData.location,
+                        gpsStatus: parsedData.gpsStatus,
+                        impactForce: parsedData.impactForce,
+                        deviceType: parsedData.deviceType,
+                        patientIdFromSMS: parsedData.patientId,
                     },
                     sound: true,
                     priority: Notifications.AndroidNotificationPriority.MAX,
@@ -280,60 +303,97 @@ class SMSParser {
      */
     async processIncomingSMS(messageBody, sender) {
         try {
-            console.log('Processing SMS from:', sender);
-            console.log('Message:', messageBody);
+            console.log('--- SMS PROCESSING START ---');
+            console.log('From:', sender);
+            console.log('Body:', messageBody);
 
-            // Check for duplicate (within 60 seconds)
+            // Check for duplicate (within 5 seconds)
             const smsKey = `${sender}_${messageBody}`;
             const now = Date.now();
             const lastProcessed = this.lastProcessedSMS[smsKey] || 0;
 
-            if (now - lastProcessed < 60000) {
-                console.log('Duplicate SMS detected, ignoring');
+            if (now - lastProcessed < 5000) {
+                console.log('DEBUG: Skipping duplicate SMS (processed', now - lastProcessed, 'ms ago)');
                 return false;
             }
 
             // Parse SMS
-            const parsedData = this.parseFallAlertSMS(messageBody, sender);
+            console.log('DEBUG: Parsing SMS body...');
+            const parsedData = this.parseSMS(messageBody, sender);
             if (!parsedData) {
-                console.log('SMS does not match fall alert format');
+                console.log('DEBUG: Parser returned null (invalid format)');
+                if (Platform.OS === 'android') ToastAndroid.show('❌ SMS: Invalid Format', ToastAndroid.SHORT);
                 return false;
             }
 
-            console.log('Parsed SMS data:', parsedData);
+            console.log('DEBUG: Parsed Data:', JSON.stringify(parsedData));
 
             // Get patient
+            console.log('DEBUG: Looking up patient for ID:', parsedData.patientId);
             const patient = await this.getPatientByIdentifier(parsedData.patientId);
             if (!patient) {
-                console.error('Could not find patient for identifier:', parsedData.patientId);
+                console.error('DEBUG: ERROR - NO PATIENT FOUND in database');
                 return false;
             }
 
-            console.log('Found patient:', patient.first_name, patient.last_name);
+            console.log('DEBUG: Associated with Patient:', patient.first_name, patient.last_name, '(ID:', patient.id, ')');
 
-            // Store fall event
-            const fallEvent = await this.storeFallEvent(parsedData, patient);
-            console.log('Fall event stored:', fallEvent?.id);
+            // 1. Always emit location update event immediately for UI (Local override)
+            if (parsedData.location) {
+                console.log('DEBUG: Emitting immediate LOCATION_UPDATED event for UI');
+                DeviceEventEmitter.emit('LOCATION_UPDATED', {
+                    patientId: patient.id,
+                    location: parsedData.location,
+                    timestamp: parsedData.timestamp,
+                    gpsStatus: parsedData.gpsStatus
+                });
 
-            // Create alert
-            const alert = await this.createFallAlert(parsedData, patient);
-            console.log('Alert created:', alert?.id);
+                // Attempt DB storage in background
+                console.log('DEBUG: Attempting to store location record in DB...');
+                supabase
+                    .from('patient_locations')
+                    .insert([
+                        {
+                            patient_id: patient.id,
+                            latitude: parsedData.location.latitude,
+                            longitude: parsedData.location.longitude,
+                            accuracy: 10.0,
+                            location_type: parsedData.alertType === 'FALL_ALERT' ? 'fall_incident' : 'tracking',
+                            notes: `SMS ${parsedData.alertType} from ${parsedData.deviceType}`,
+                            created_at: parsedData.timestamp.toISOString(),
+                            timestamp: parsedData.timestamp.toISOString(),
+                        },
+                    ])
+                    .then(({ error }) => {
+                        if (error) console.error('Silent DB Err (Location):', error);
+                        else if (Platform.OS === 'android') ToastAndroid.show('📍 Live: Location Synced to Cloud', ToastAndroid.SHORT);
+                    });
+            }
 
-            // Send push notification
-            await this.sendPushNotification(parsedData, patient);
+            // 2. Handle Fall-specific logic
+            if (parsedData.alertType === 'FALL_ALERT') {
+                console.log('DEBUG: Processing FALL_ALERT specific tasks...');
+
+                // Emit global event for UI reaction (Popups, etc) IMMEDIATELY
+                console.log('DEBUG: Emitting immediate FALL_ALERT_RECEIVED event');
+                DeviceEventEmitter.emit('FALL_ALERT_RECEIVED', {
+                    parsedData,
+                    patient
+                });
+
+                // Run other storage/notification tasks in background
+                this.storeFallEvent(parsedData, patient);
+                this.createFallAlert(parsedData, patient);
+                this.sendPushNotification(parsedData, patient);
+            }
 
             // Mark as processed
             this.lastProcessedSMS[smsKey] = now;
-
-            // If location available, trigger geofencing (will be implemented in geofencing service)
-            if (parsedData.location) {
-                console.log('Location available, geofencing will be triggered');
-                // GeofencingService will handle this via database trigger or direct call
-            }
+            console.log('--- SMS PROCESSING COMPLETE ---');
 
             return true;
         } catch (error) {
-            console.error('Error processing SMS:', error);
+            console.error('DEBUG: FATAL ERROR during SMS processing:', error);
             return false;
         }
     }
@@ -343,8 +403,8 @@ class SMSParser {
      * @returns {object} - Test results
      */
     testParser() {
-        const testSMS = "FALL_ALERT|PATIENT_001|12.345678,98.765432|2024-01-15 14:30:45|Battery:85%|Device:Pi";
-        const result = this.parseFallAlertSMS(testSMS, "+1234567890");
+        const testSMS = "FALL_ALERT|PATIENT_001|9.723,76.726|GPS_OK|21:52:31|Impact:0.65g|Device:PiZero";
+        const result = this.parseSMS(testSMS, "+910000000000");
         console.log('Test parse result:', result);
         return result;
     }

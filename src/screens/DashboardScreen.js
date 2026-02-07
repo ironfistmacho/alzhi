@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Alert, DeviceEventEmitter } from 'react-native';
 import { Card, Button } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -54,6 +54,20 @@ const DashboardScreen = ({ navigation }) => {
   const [caregiver, setCaregiver] = useState(null);
   const [patientCount, setPatientCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [lastActivity, setLastActivity] = useState(null);
+
+  useEffect(() => {
+    const locSub = DeviceEventEmitter.addListener('LOCATION_UPDATED', (data) => {
+      setLastActivity({ type: 'Location', time: new Date() });
+    });
+    const fallSub = DeviceEventEmitter.addListener('FALL_ALERT_RECEIVED', (data) => {
+      setLastActivity({ type: 'FALL ALERT', time: new Date() });
+    });
+    return () => {
+      locSub.remove();
+      fallSub.remove();
+    };
+  }, []);
 
   // Fetch caregiver info
   const fetchCaregiverInfo = useCallback(async (force = false) => {
@@ -208,6 +222,25 @@ const DashboardScreen = ({ navigation }) => {
       {/* Timer Card - Optimized */}
       <ClockCard />
 
+      {/* Real-time Status Card */}
+      {lastActivity && (
+        <Card style={[styles.statusCard, lastActivity.type === 'FALL ALERT' && styles.alertStatusCard]}>
+          <Card.Content style={styles.statusContent}>
+            <Ionicons
+              name={lastActivity.type === 'Location' ? 'location' : 'alert-circle'}
+              size={24}
+              color={lastActivity.type === 'Location' ? '#00acc1' : '#e74c3c'}
+            />
+            <View style={styles.statusTextContainer}>
+              <Text style={styles.statusLabel}>Live Activity Detected</Text>
+              <Text style={styles.statusValue}>
+                Last {lastActivity.type} received at {lastActivity.time.toLocaleTimeString()}
+              </Text>
+            </View>
+          </Card.Content>
+        </Card>
+      )}
+
       {/* Patients Overview Card */}
       <Card style={styles.card}>
         <Card.Title
@@ -245,6 +278,20 @@ const DashboardScreen = ({ navigation }) => {
             icon="plus"
           >
             Add New Patient
+          </Button>
+          <Button
+            mode="outlined"
+            onPress={() => {
+              const locSMS = "LOCATION_UPDATE|PATIENT_001|9.723429,76.726521|GPS_OK(0s)|20:32:55|Device:PiZero";
+              const SMSParser = require('../services/smsParser').default;
+              SMSParser.processIncomingSMS(locSMS, "+917593806531");
+              navigation.navigate('MainTabs', { screen: 'Location' });
+            }}
+            style={styles.actionButton}
+            labelStyle={styles.actionLabel}
+            icon="crosshairs-gps"
+          >
+            Test Location SMS
           </Button>
           <Button
             mode="outlined"
@@ -417,6 +464,35 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 6,
     fontStyle: 'italic',
+  },
+  statusCard: {
+    marginBottom: 16,
+    borderRadius: 12,
+    backgroundColor: '#e0f7fa',
+    borderLeftWidth: 4,
+    borderLeftColor: '#00acc1',
+  },
+  alertStatusCard: {
+    backgroundColor: '#ffebee',
+    borderLeftColor: '#e74c3c',
+  },
+  statusContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  statusTextContainer: {
+    marginLeft: 12,
+  },
+  statusLabel: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#00838f',
+    textTransform: 'uppercase',
+  },
+  statusValue: {
+    fontSize: 13,
+    color: '#00acc1',
   },
   card: {
     marginBottom: 16,

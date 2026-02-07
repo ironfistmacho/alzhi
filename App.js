@@ -21,10 +21,13 @@ import DeviceConnectionScreen from './src/screens/DeviceConnectionScreen';
 
 // Services
 import SMSListenerService from './src/services/smsListener.android';
-import { PermissionsAndroid, Platform } from 'react-native';
+import { PermissionsAndroid, Platform, DeviceEventEmitter, Alert } from 'react-native';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
+
+// Reference to navigation for outside access
+let navigationRef = null;
 
 function MainTabs() {
   return (
@@ -78,17 +81,21 @@ export default function App() {
             PermissionsAndroid.PERMISSIONS.READ_SMS,
           ]);
 
-          if (
+          const isGranted =
             granted['android.permission.RECEIVE_SMS'] === PermissionsAndroid.RESULTS.GRANTED &&
-            granted['android.permission.READ_SMS'] === PermissionsAndroid.RESULTS.GRANTED
-          ) {
+            granted['android.permission.READ_SMS'] === PermissionsAndroid.RESULTS.GRANTED;
+
+          if (isGranted) {
             console.log('SMS Permissions GRANTED');
-            const initialized = await SMSListenerService.initialize();
-            if (initialized) {
-              await SMSListenerService.startListening();
-            }
           } else {
-            console.log('SMS Permissions DENIED');
+            console.log('SMS Permissions DENIED - Proceeding with limited initialization (hard coded)');
+          }
+
+          // Initialize anyway as per user request (hard code if want to)
+          const initialized = await SMSListenerService.initialize();
+          if (initialized) {
+            await SMSListenerService.startListening();
+            console.log('SMS Listener service started');
           }
         } catch (err) {
           console.warn(err);
@@ -98,17 +105,42 @@ export default function App() {
 
     setupSMSListener();
 
+    // Global listener for fall alerts to show emergency popup
+    const fallListener = DeviceEventEmitter.addListener('FALL_ALERT_RECEIVED', ({ parsedData, patient }) => {
+      Alert.alert(
+        '🚨 EMERGENCY: FALL DETECTED',
+        `A fall was detected for ${patient.first_name} ${patient.last_name}.\n\nImpact: ${parsedData.impactForce}g\nLocation: ${parsedData.location ? 'GPS Fixed' : 'NO GPS FIX'}\nDevice: ${parsedData.deviceType}`,
+        [
+          {
+            text: 'Dismiss',
+            onPress: () => console.log('Alert dismissed'),
+            style: 'cancel',
+          },
+          {
+            text: 'VIEW ALERT',
+            onPress: () => {
+              if (navigationRef) {
+                navigationRef.navigate('MainTabs', { screen: 'Alerts' });
+              }
+            },
+          },
+        ],
+        { cancelable: false }
+      );
+    });
+
     return () => {
       if (Platform.OS === 'android') {
         SMSListenerService.cleanup();
       }
+      fallListener.remove();
     };
   }, []);
 
   return (
     <PaperProvider>
       <SafeAreaProvider>
-        <NavigationContainer>
+        <NavigationContainer ref={(ref) => (navigationRef = ref)}>
           <StatusBar style="light" />
           <Stack.Navigator screenOptions={{ headerShown: false }}>
             <Stack.Screen

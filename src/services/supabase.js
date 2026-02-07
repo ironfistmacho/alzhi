@@ -20,6 +20,36 @@ class SupabaseClient {
   from(table) {
     return new QueryBuilder(this, table);
   }
+
+  channel(name) {
+    return new ChannelClient(this, name);
+  }
+
+  removeChannel(channel) {
+    console.log(`Supabase Realtime stub: .removeChannel() called for ${channel.name}`);
+    return Promise.resolve();
+  }
+}
+
+class ChannelClient {
+  constructor(client, name) {
+    this.client = client;
+    this.name = name;
+    this.listeners = [];
+  }
+
+  on(event, config, callback) {
+    this.listeners.push({ event, config, callback });
+    return this;
+  }
+
+  subscribe() {
+    return {
+      unsubscribe: () => {
+        this.listeners = [];
+      },
+    };
+  }
 }
 
 class AuthClient {

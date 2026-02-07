@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
-import { Card, Title, Button, IconButton, Menu, Divider, ActivityIndicator } from 'react-native-paper';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, DeviceEventEmitter } from 'react-native';
+import { Card, Title, Button, IconButton, Menu, Divider, ActivityIndicator, Badge } from 'react-native-paper';
 import { format } from 'date-fns';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../services/supabase';
 
 const AlertsScreen = () => {
@@ -12,9 +13,9 @@ const AlertsScreen = () => {
   const [expandedAlertId, setExpandedAlertId] = useState(null);
   const [menuVisible, setMenuVisible] = useState(false);
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
@@ -62,30 +63,97 @@ const AlertsScreen = () => {
         });
       }
 
-      setAlerts(alertsData.map(a => {
+      // Map to UI format
+      const formattedAlerts = alertsData.map(a => {
         const patient = patientMap[a.patient_id];
         return {
           id: a.id,
-          type: a.title,
+          type: a.title || 'Fall Alert',
           message: a.message,
           timestamp: new Date(a.created_at),
           priority: a.priority,
           read: a.is_read,
-          patientName: patient ? `${patient.first_name} ${patient.last_name}` : 'Unknown Patient',
+          patientName: patient ? `${patient.first_name} ${patient.last_name}` : 'Patient',
           details: a.message
         };
-      }));
+      });
+
+      setAlerts(formattedAlerts);
     } catch (error) {
       console.error('Error fetching alerts:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
-
-  useEffect(() => {
-    fetchAlerts();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchAlerts();
+
+      // Listen for local SMS parsing events for immediate feedback
+      const localSub = DeviceEventEmitter.addListener('FALL_ALERT_RECEIVED', ({ parsedData, patient }) => {
+        console.log('Received local fall alert event:', parsedData);
+        // Add to local state immediately
+        const newAlert = {
+          id: `local_fall_${Date.now()}`,
+          patient_id: patient.id,
+          alert_type: 'fall',
+          title: '🚨 FALL DETECTED (LIVE)',
+          message: `SMS Alert from ${parsedData.deviceType} | Impact: ${parsedData.impactForce}g`,
+          timestamp: new Date(),
+          priority: 'critical',
+          read: false,
+          patientName: `${patient.first_name} ${patient.last_name}`,
+          details: parsedData.rawMessage,
+          isLive: true
+        };
+
+        setAlerts(prev => [newAlert, ...prev]);
+        setTimeout(() => fetchAlerts(false), 2000);
+      });
+
+      const locSub = DeviceEventEmitter.addListener('LOCATION_UPDATED', (data) => {
+        console.log('Received local location update in AlertsScreen:', data);
+
+        // Only show in alerts list if not a "silent" update or for debugging
+        const newAlert = {
+          id: `local_loc_${Date.now()}`,
+          patient_id: data.patientId,
+          alert_type: 'location',
+          title: '📍 LOCATION UPDATE (LIVE)',
+          message: `Incoming tracking data | Status: ${data.gpsStatus || 'OK'}`,
+          timestamp: new Date(),
+          priority: 'low',
+          read: true,
+          patientName: 'Live Tracker',
+          details: `Source: SMS | ${data.location.latitude}, ${data.location.longitude}`,
+          isLive: true
+        };
+
+        setAlerts(prev => [newAlert, ...prev]);
+      });
+
+      // Set up Realtime subscription stub
+      const channel = supabase
+        .channel('public:patient_alerts')
+        .on(
+          'postgres_changes',
+          { event: '*', table: 'patient_alerts', schema: 'public' },
+          (payload) => {
+            console.log('Realtime alert update:', payload);
+            fetchAlerts(false);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+        localSub.remove();
+        locSub.remove();
+      };
+    }, [fetchAlerts])
+  );
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -186,6 +254,9 @@ const AlertsScreen = () => {
               style={styles.alertIcon}
             />
             <Text style={styles.alertType}>{item.type}</Text>
+            {item.isLive && (
+              <Badge style={styles.liveBadge}>LIVE</Badge>
+            )}
           </View>
           <View style={styles.alertTimeContainer}>
             <Text style={styles.alertTime}>
@@ -252,6 +323,17 @@ const AlertsScreen = () => {
       <View style={styles.header}>
         <Title style={styles.title}>Alerts & Notifications</Title>
         <View style={styles.headerActions}>
+          <Button
+            mode="text"
+            onPress={() => {
+              const testMsg = "FALL_ALERT|PATIENT_001|9.723517,76.726443|GPS_OK(0s)|20:41:59|Impact:2.51g|Device:PiZero";
+              const SMSParser = require('../services/smsParser').default;
+              SMSParser.processIncomingSMS(testMsg, "+910000000000");
+            }}
+            compact
+          >
+            Test Fall SMS
+          </Button>
           <Menu
             visible={menuVisible}
             onDismiss={() => setMenuVisible(false)}
@@ -415,6 +497,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 16,
     color: '#00838f',
+    marginRight: 8,
+  },
+  liveBadge: {
+    backgroundColor: '#e74c3c',
+    color: 'white',
+    alignSelf: 'center',
   },
   alertTimeContainer: {
     alignItems: 'flex-end',

@@ -9,11 +9,13 @@ import {
   Easing,
   TouchableOpacity,
 } from 'react-native';
-import MapView, { Marker, Circle, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Circle, Polyline, Callout, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { Card, Button, ActivityIndicator, SegmentedButtons, IconButton } from 'react-native-paper';
+import { Ionicons } from '@expo/vector-icons';
+import { Card, Button, ActivityIndicator, SegmentedButtons, IconButton, Badge } from 'react-native-paper';
 import { supabase } from '../services/supabase';
 import geofencingService, { GEOFENCE_RADIUS } from '../services/geofencing';
+import { DeviceEventEmitter } from 'react-native';
 
 const LocationTrackingScreen = () => {
   const [location, setLocation] = useState(null);
@@ -25,6 +27,8 @@ const LocationTrackingScreen = () => {
   const [selectedRadius, setSelectedRadius] = useState(GEOFENCE_RADIUS.MEDIUM);
   const [showFalls, setShowFalls] = useState(true);
   const [showGeofences, setShowGeofences] = useState(true);
+  const [patientLocation, setPatientLocation] = useState(null);
+  const [patientData, setPatientData] = useState(null);
 
   // Animation states
   const slideUpAnim = useRef(new Animated.Value(100)).current;
@@ -35,10 +39,33 @@ const LocationTrackingScreen = () => {
 
   useEffect(() => {
     initialize();
+
+    // Listen for real-time location updates from SMS
+    const locSubscription = DeviceEventEmitter.addListener('LOCATION_UPDATED', (data) => {
+      console.log('Received real-time location update in UI:', data);
+      const newLoc = {
+        latitude: data.location.latitude,
+        longitude: data.location.longitude,
+        timestamp: new Date(data.timestamp)
+      };
+      setPatientLocation(newLoc);
+      setLastUpdated(new Date().toLocaleTimeString());
+
+      // Optionally auto-center if tracking is enabled
+      if (isTracking && mapRef.current) {
+        mapRef.current.animateToRegion({
+          ...newLoc,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }, 1000);
+      }
+    });
+
     return () => {
       geofencingService.stopMonitoring();
+      locSubscription.remove();
     };
-  }, []);
+  }, [isTracking]);
 
   const initialize = async () => {
     try {
@@ -59,7 +86,8 @@ const LocationTrackingScreen = () => {
       await geofencingService.initialize();
       await geofencingService.setDefaultRadius(selectedRadius);
 
-      // Load fall locations and geofences
+      // Load initial patient and location
+      await loadInitialData();
       await loadFallLocations();
       await loadGeofences();
 
@@ -68,6 +96,40 @@ const LocationTrackingScreen = () => {
     } catch (error) {
       console.error('Error initializing location tracking:', error);
       setIsLoading(false);
+    }
+  };
+
+  const loadInitialData = async () => {
+    try {
+      // Get first patient
+      const { data: patient } = await supabase
+        .from('patients')
+        .select('*')
+        .limit(1)
+        .single();
+
+      if (patient) {
+        setPatientData(patient);
+
+        // Get last known location from DB
+        const { data: lastLoc } = await supabase
+          .from('patient_locations')
+          .select('*')
+          .eq('patient_id', patient.id)
+          .order('timestamp', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (lastLoc) {
+          setPatientLocation({
+            latitude: lastLoc.latitude,
+            longitude: lastLoc.longitude,
+            timestamp: new Date(lastLoc.timestamp)
+          });
+        }
+      }
+    } catch (e) {
+      console.log('Error loading initial patient data:', e);
     }
   };
 
@@ -152,10 +214,73 @@ const LocationTrackingScreen = () => {
   const loadGeofences = async () => {
     try {
       await geofencingService.loadGeofencesFromDatabase();
-      setActiveGeofences(geofencingService.getActiveGeofences());
-      console.log(`Loaded ${activeGeofences.length} geofences`);
+      const currentGfs = geofencingService.getActiveGeofences();
+      setActiveGeofences(currentGfs);
+      console.log(`Loaded ${currentGfs.length} geofences`);
     } catch (error) {
       console.error('Error loading geofences:', error);
+    }
+  };
+
+  const handleDeleteGeofence = async (geofenceId) => {
+    Alert.alert(
+      'Delete Zone',
+      'Are you sure you want to remove this safe zone?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const success = await geofencingService.removeGeofence(geofenceId);
+              if (success) {
+                await loadGeofences();
+                Alert.alert('Success', 'Zone removed successfully');
+              } else {
+                Alert.alert('Error', 'Failed to remove zone');
+              }
+            } catch (error) {
+              console.error('Error deleting geofence:', error);
+              Alert.alert('Error', 'An unexpected error occurred');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleResetMap = async () => {
+    setIsLoading(true);
+    try {
+      // Refresh current location
+      const currentLocation = await Location.getCurrentPositionAsync({});
+      setLocation(currentLocation.coords);
+
+      // Refresh patient data
+      await loadInitialData();
+      await loadFallLocations();
+      await loadGeofences();
+
+      setLastUpdated(new Date().toLocaleTimeString());
+
+      // Center map on patient if available, otherwise current user
+      const target = patientLocation || currentLocation.coords;
+      if (mapRef.current) {
+        mapRef.current.animateToRegion({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        }, 1000);
+      }
+
+      setIsLoading(false);
+      Alert.alert('Reset Complete', 'Map and data have been refreshed');
+    } catch (error) {
+      console.error('Error resetting map:', error);
+      setIsLoading(false);
+      Alert.alert('Error', 'Failed to reset map');
     }
   };
 
@@ -289,21 +414,59 @@ const LocationTrackingScreen = () => {
             </Marker>
           ))}
 
-        {/* Geofence Circles */}
+        {/* Geofence Circles & Delete Markers */}
         {showGeofences &&
           activeGeofences.map((geofence, index) => (
-            <Circle
-              key={`geofence_${index}`}
-              center={{
-                latitude: geofence.latitude,
-                longitude: geofence.longitude,
-              }}
-              radius={geofence.radius}
-              fillColor="rgba(0, 188, 212, 0.2)"
-              strokeColor="rgba(0, 188, 212, 0.8)"
-              strokeWidth={2}
-            />
+            <React.Fragment key={`gf_group_${index}`}>
+              <Circle
+                center={{
+                  latitude: geofence.latitude,
+                  longitude: geofence.longitude,
+                }}
+                radius={geofence.radius}
+                fillColor="rgba(0, 188, 212, 0.2)"
+                strokeColor="rgba(0, 188, 212, 0.8)"
+                strokeWidth={2}
+              />
+              <Marker
+                coordinate={{
+                  latitude: geofence.latitude,
+                  longitude: geofence.longitude,
+                }}
+                onPress={() => console.log('Geofence pressed')}
+              >
+                <View style={styles.geofenceMarker}>
+                  <Ionicons name="shield-checkmark" size={16} color="white" />
+                </View>
+                <Callout onPress={() => handleDeleteGeofence(geofence.id || `db_${geofence.id}`)}>
+                  <View style={styles.calloutContainer}>
+                    <Text style={styles.calloutTitle}>Safe Zone</Text>
+                    <Text style={styles.calloutAction}>Tap to Delete</Text>
+                  </View>
+                </Callout>
+              </Marker>
+            </React.Fragment>
           ))}
+
+        {/* Live Patient Marker */}
+        {patientLocation && (
+          <Marker
+            coordinate={{
+              latitude: patientLocation.latitude,
+              longitude: patientLocation.longitude,
+            }}
+            title={`${patientData?.first_name || 'Patient'}'s Live Location`}
+            description={`Updated: ${patientLocation.timestamp?.toLocaleTimeString()}`}
+            zIndex={10}
+          >
+            <View style={styles.patientMarkerContainer}>
+              <View style={styles.patientMarkerPulse} />
+              <View style={styles.patientMarker}>
+                <Ionicons name="person" size={18} color="white" />
+              </View>
+            </View>
+          </Marker>
+        )}
       </MapView>
 
       {/* Controls Panel */}
@@ -387,6 +550,7 @@ const LocationTrackingScreen = () => {
                 style={[styles.button, isTracking ? styles.stopButton : styles.startButton]}
                 labelStyle={{ color: isTracking ? 'white' : '#00acc1' }}
                 icon={isTracking ? 'stop' : 'play'}
+                compact
               >
                 {isTracking ? 'Stop' : 'Start'}
               </Button>
@@ -395,8 +559,19 @@ const LocationTrackingScreen = () => {
                 onPress={handleCreateGeofence}
                 style={[styles.button, styles.safeZoneButton]}
                 icon="map-marker-plus"
+                compact
               >
-                Add Zone
+                Zone
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={handleResetMap}
+                style={[styles.button, styles.resetButton]}
+                icon="refresh"
+                textColor="#00838f"
+                compact
+              >
+                Reset
               </Button>
             </View>
           </Card.Content>
@@ -487,6 +662,36 @@ const styles = StyleSheet.create({
   safeZoneButton: {
     backgroundColor: '#00bcd4',
   },
+  resetButton: {
+    borderColor: '#00838f',
+  },
+  geofenceMarker: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#00acc1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
+    elevation: 4,
+  },
+  calloutContainer: {
+    width: 120,
+    padding: 8,
+    alignItems: 'center',
+  },
+  calloutTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#00838f',
+    marginBottom: 4,
+  },
+  calloutAction: {
+    fontSize: 12,
+    color: '#e74c3c',
+    fontWeight: '600',
+  },
   fallMarker: {
     width: 30,
     height: 30,
@@ -499,6 +704,31 @@ const styles = StyleSheet.create({
   },
   fallMarkerText: {
     fontSize: 18,
+  },
+  patientMarkerContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 40,
+    height: 40,
+  },
+  patientMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#00acc1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
+    elevation: 4,
+  },
+  patientMarkerPulse: {
+    position: 'absolute',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 172, 193, 0.3)',
+    transform: [{ scale: 1 }],
   },
   loadingContainer: {
     flex: 1,
